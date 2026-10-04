@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistantMessageEventStream, InMemoryCredentialStore, type AssistantMessage, type StreamFunction, type ToolCall } from "@earendil-works/pi-ai";
-import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type AgentSession } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type InputSource } from "@earendil-works/pi-coding-agent";
 import extension from "../src/index.ts";
 import { CONTROL_TYPE, STATE_TYPE, emptyState, parseState, type State } from "../src/state.ts";
 
@@ -30,8 +30,8 @@ function response(model: Parameters<StreamFunction>[0], step: Step, call: number
   return stream;
 }
 async function harness(steps: Step[], work: (h: {
-  session: AgentSession; state(): State; run(text: string): Promise<void>;
-  requests: Parameters<StreamFunction>[1][]; notices: string[];
+  session: AgentSession; state(): State; run(text: string, source?: InputSource): Promise<void>;
+  requests: Parameters<StreamFunction>[1][]; notices: string[]; statuses: string[];
 }) => Promise<void>, initial?: State, retry = false) {
   const dir = mkdtempSync(join(tmpdir(), "pi-goal-fresh-"));
   const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false, credentials: new InMemoryCredentialStore(), modelsPath: null });
@@ -51,6 +51,7 @@ async function harness(steps: Step[], work: (h: {
       reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 } });
   const requests: Parameters<StreamFunction>[1][] = [];
   const notices: string[] = [];
+  const statuses: string[] = [];
   session.agent.streamFunction = async (model, context) => {
     requests.push(structuredClone(context));
     const step = steps[requests.length - 1];
@@ -62,14 +63,15 @@ async function harness(steps: Step[], work: (h: {
     await session.bindExtensions({});
     session.extensionRunner!.setUIContext({ ...session.extensionRunner!.createContext().ui,
       notify(message) { notices.push(message); }, confirm: async () => true,
+      setStatus(_key, value) { if (value !== undefined) statuses.push(value); },
     }, "tui");
-    await work({ session, requests, notices,
+    await work({ session, requests, notices, statuses,
       state() {
         let state = emptyState();
         for (const e of sessionManager.getBranch()) if (e.type === "custom" && e.customType === STATE_TYPE) state = parseState(e.data);
         return state;
       },
-      async run(text) { await session.prompt(text); await session.waitForIdle(); },
+      async run(text, source = "interactive") { await session.prompt(text, { source }); await session.waitForIdle(); },
     });
   } finally { session.dispose(); rmSync(dir, { recursive: true, force: true }); }
 }
@@ -97,7 +99,7 @@ test("native SDK: initial objective stays in state; automatic continuation has n
 
 test("native SDK: block persists through ordinary input; explicit resume is silent", async () => {
   await harness([
-    { tool: "get_goal" }, { tool: "update_goal", args: { status: "blocked", reason: "Need decision" } }, { text: "Blocked" },
+    { tool: "get_goal" }, { tool: "update_goal", args: { status: "blocked", reason: "Need decision", all_work_blocked: true } }, { text: "Blocked" },
     { text: "Answering unrelated question" },
     { tool: "get_goal" }, { tool: "update_goal", args: { status: "complete" } }, { text: "Done" },
   ], async h => {
@@ -231,7 +233,7 @@ test("native SDK: an old run cannot complete or charge a concurrently replaced g
 test("native SDK: queued real user input is handled before automatic idle work", async () => {
   await harness([
     { text: "First step", before: async session => { await session.followUp("REAL_USER_FOLLOWUP"); } },
-    { tool: "update_goal", args: { status: "blocked", reason: "Wait for input" } }, { text: "Blocked" },
+    { tool: "update_goal", args: { status: "blocked", reason: "Wait for input", all_work_blocked: true } }, { text: "Blocked" },
   ], async h => {
     await h.run(`/goal ${objective}`);
     expect(h.requests.length).toBe(3);
@@ -254,7 +256,7 @@ test("native SDK: disabled goal tools prevent unsafe autonomous admission", asyn
 });
 
 test("native SDK: compaction removes old context, not branch-local plugin state", async () => {
-  await harness([{ tool: "update_goal", args: { status: "blocked", reason: "dependency" } }, { text: "Blocked" }], async h => {
+  await harness([{ tool: "update_goal", args: { status: "blocked", reason: "dependency", all_work_blocked: true } }, { text: "Blocked" }], async h => {
     await h.run(`/goal ${objective}`);
     const manager = h.session.sessionManager;
     const last = manager.getBranch().at(-1)!;
@@ -266,4 +268,96 @@ test("native SDK: compaction removes old context, not branch-local plugin state"
     expect(h.state().goal?.status).toBe("blocked");
     expect(h.requests.length).toBe(2);
   });
+});
+
+test("native SDK: compact footer preserves exact state and tool numbers", async () => {
+  const { GoalStore } = await import("../src/state.ts");
+  const store = new GoalStore(); const goal = store.create(objective);
+  store.account(goal.id, 664812, 0);
+  await harness([{ tool: "get_goal" }, { tool: "update_goal", args: { status: "complete" } }, { text: "Done" }], async h => {
+    await h.run("/goal resume");
+    expect(h.statuses.some(s => s === "Goal · active · 664.8K tokens")).toBe(true);
+    expect(h.statuses.at(-1)).toBe("Goal · complete · 664.8K tokens");
+    expect(h.state().receipt?.tokensUsed).toBe(664834);
+    expect(JSON.stringify(h.requests[1]!.messages)).toContain('"tokensUsed":664823');
+  }, store.snapshot());
+});
+
+test("native SDK: one impossible requirement does not block feasible work", async () => {
+  await harness([
+    { tool: "get_goal" },
+    { tool: "update_goal", args: { status: "blocked", reason: "One unsupported requirement" } },
+    { text: "Implemented feasible parts; reported unsupported requirement" },
+    { tool: "get_goal" }, { tool: "update_goal", args: { status: "complete" } }, { text: "Verified feasible work and listed limitations" },
+  ], async h => {
+    await h.run(`/goal ${objective}`);
+    expect(h.requests.length).toBe(6);
+    expect(JSON.stringify(h.requests[2]!.messages)).toContain("不要因单项要求无法实现而阻塞目标");
+    expect(h.state().goal).toBeNull();
+    expect(h.state().receipt?.tokensUsed).toBe(55);
+  });
+});
+
+test("native SDK: blocked request with all_work_blocked false is rejected", async () => {
+  await harness([{ tool: "update_goal", args: { status: "blocked", reason: "Only one unsupported item", all_work_blocked: false } },
+    { tool: "update_goal", args: { status: "complete" } }, { text: "Done" }], async h => {
+    await h.run(`/goal ${objective}`);
+    expect(h.requests.length).toBe(3);
+    expect(h.state().receipt?.status).toBe("complete");
+    expect(JSON.stringify(h.requests[1]!.messages)).toContain("继续可行工作");
+  });
+});
+
+test("native SDK: explicit Chinese request resumes a blocked goal in the real user's turn", async () => {
+  await harness([{ tool: "update_goal", args: { status: "blocked", reason: "All feasible work depends on input", all_work_blocked: true } }, { text: "Blocked" },
+    { tool: "update_goal", args: { status: "complete" } }, { text: "Done" }], async h => {
+    await h.run(`/goal ${objective}`);
+    expect(h.state().goal?.status).toBe("blocked");
+    await h.run("无法实现的要求跳过，继续实现目标");
+    expect(h.state().goal).toBeNull();
+    expect(h.requests.length).toBe(4);
+    const controls = h.session.sessionManager.getBranch().filter(e => e.type === "custom_message" && e.customType === CONTROL_TYPE);
+    expect(controls.length).toBe(1); // No fabricated extra resume message.
+    const users = h.session.sessionManager.getBranch().filter(e => e.type === "message" && e.message.role === "user");
+    expect(users.length).toBe(1);
+  });
+});
+
+test("native SDK: synthetic extension input never grants consent to resume", async () => {
+  await harness([{ tool: "update_goal", args: { status: "blocked", reason: "dependency", all_work_blocked: true } }, { text: "Blocked" }, { text: "No resume" }], async h => {
+    await h.run(`/goal ${objective}`);
+    await h.run("继续实现目标", "extension");
+    expect(h.state().goal?.status).toBe("blocked");
+    expect(h.requests.length).toBe(3);
+  });
+});
+
+test.each([
+  { status: "paused" as const, source: "interactive" as const },
+  { status: "usageLimited" as const, source: "rpc" as const },
+])("native SDK: real $source resume request restores $status without control messages", async ({ status, source }) => {
+  const { GoalStore } = await import("../src/state.ts");
+  const store = new GoalStore(); const goal = store.create(objective);
+  store.transition(goal.id, status, "Waiting for explicit user resume");
+  await harness([{ tool: "update_goal", args: { status: "complete" } }, { text: "Done" }], async h => {
+    await h.run("继续实现目标", source);
+    expect(h.state().goal).toBeNull();
+    expect(h.state().receipt?.status).toBe("complete");
+    expect(h.requests.length).toBe(2);
+    const controls = h.session.sessionManager.getBranch().filter(e => e.type === "custom_message" && e.customType === CONTROL_TYPE);
+    expect(controls.length).toBe(0);
+  }, store.snapshot());
+});
+
+test("native SDK: explicit resume intent cannot bypass budget exhaustion", async () => {
+  const { GoalStore } = await import("../src/state.ts");
+  const store = new GoalStore(); const goal = store.create(objective, 10);
+  store.account(goal.id, 10, 0); store.transition(goal.id, "paused", "User paused");
+  await harness([{ text: "Cannot bypass budget" }], async h => {
+    await h.run("继续实现目标");
+    expect(h.state().goal?.status).toBe("paused");
+    expect(h.state().goal?.tokensUsed).toBe(10);
+    expect(h.notices.some(n => n.includes("预算已耗尽"))).toBe(true);
+    expect(h.requests.length).toBe(1);
+  }, store.snapshot());
 });

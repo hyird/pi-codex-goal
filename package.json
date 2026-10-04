@@ -1,6 +1,6 @@
 {
   "name": "pi-codex-goal",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Independent Pi goal runtime based on OpenAI Codex goal semantics, without generated user messages.",

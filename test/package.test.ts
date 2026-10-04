@@ -17,6 +17,11 @@ test("local package manifest discovers only the independent implementation", asy
     expect(loaded.extensions.length).toBe(1);
     expect(loaded.extensions[0]!.commands.has("goal")).toBe(true);
     expect([...loaded.extensions[0]!.tools.keys()].sort()).toEqual(["create_goal", "get_goal", "update_goal"]);
+  for (const { definition } of loaded.extensions[0]!.tools.values()) {
+    expect(definition.renderShell).toBe("self");
+    expect(typeof definition.renderCall).toBe("function");
+    expect(typeof definition.renderResult).toBe("function");
+  }
     expect(loaded.extensions[0]!.handlers.has("agent_before_settle")).toBe(true);
     expect(loaded.extensions[0]!.resolvedPath).toBe(join(path, "src/index.ts"));
   } finally { rmSync(dir, { recursive: true, force: true }); }

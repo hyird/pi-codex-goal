@@ -9,10 +9,10 @@
 | Codex 路径（以上固定版本） | 参考行为 | Pi 实现 |
 |---|---|---|
 | `codex-rs/ext/goal/src/runtime.rs` / `continue_if_idle` | 读取持久状态；只允许 active；原子检查目标与空闲状态；拒绝排队/过期执行 | `GoalStore` 同步 mutation、goal ID 运行绑定、`kick` 与 `agent_before_settle` |
-| `runtime.rs` / `apply_external_goal_set` | 状态变更后恢复 accounting，空闲时启动，不将状态变更伪装成用户提问 | `/goal` 状态变更与隐藏 control |
+| `runtime.rs` / `apply_external_goal_set` | 状态变更后恢复 accounting，空闲时启动，不将状态变更伪装成用户提问 | `/goal` 状态变更与隐藏 control；仅为 Pi 适配，并非完全相同的无消息调度语义 |
 | `runtime.rs` / `stop_active_goal_for_turn` | 完成宿主重试后的终止错误阻塞目标；额度错误单独标记 usageLimited | `agent_before_settle` 的 error outcome 分支 |
 | `codex-rs/ext/goal/src/extension.rs` | thread idle 驱动续跑；turn start/stop/abort 驱动 accounting；错误不立即续跑 | Pi 生命周期适配，没有后台续跑/恢复 timer |
-| `codex-rs/ext/goal/src/steering.rs` | 使用内部模型上下文片段，来源 goal，不是普通用户提交 | Pi `custom_message`, `display: false`；从不调用 `sendUserMessage` |
+| `codex-rs/ext/goal/src/steering.rs` | 使用内部模型上下文片段，来源 goal，不是普通用户提交 | Pi `custom_message`, `display: false`；从不调用 `sendUserMessage`，但 Pi 转给模型时仍使用 user role，区别见下文 |
 | `codex-rs/ext/goal/src/accounting.rs` | 三次自动空输出、三次执行失败后 blocked；基于 goal ID 精确归属 | emptyRuns / failureRuns、run ID guard、WeakSet response 去重 |
 | `accounting.rs` / `goal_token_delta_for_usage` | 新处理输入（扣除 cached read）+ output；reasoning 不重复计算；归集子执行用量 | Pi `input + cacheWrite + output`，只计 top-level 工具的聚合 usage |
 | `codex-rs/ext/goal/src/tool.rs` | get / create / update 工具；未完成目标不可自动创建覆盖；完成前计费；终态停止 | 三个同名工具、终态完成记录、明确替换参数 |
@@ -26,6 +26,10 @@
 4. **Pi 最终可操作边界**：`agent_end` 之后宿主仍可能重试。使用 Pi 1.0 的 `agent_before_settle` 等价适配 Codex 最终 thread-idle admission；不在 notification-only `agent_settled` 启动模型。
 5. **用户取消会暂停**；暂停不取消已在运行的工具。重开 active 保存状态时变 paused，避免未经许可恢复自主执行。
 6. 显式替换和交互确认 clear 是用户控制的例外，不由模型自行放弃目标。
+7. **消息适配不等同原生调度**：`display: false` 是 Pi 原生显示字段，不是不持久化、也不是不进入模型上下文。当前扩展 API 没有空闲时无消息启动能力；`continue: true` 也要求可运行上下文，assistant 结尾且无新输入时会被拒绝。在用户明确不允许修改 Pi 本体、接受隐藏消息回退后，保留 custom control，不假称零消息。
+8. **尽力执行而非单项阻塞**：按用户要求，经验证不可能的单项要求可以说明并跳过；继续完成可行部分。模型必须显式声明 `all_work_blocked: true` 才能因必要依赖阻塞整个目标。真实宿主错误、用量限制、预算和无进展保护不受影响。可行性仍由模型基于证据判断，不声称布尔字段能证明所有工作确实不可执行。
+9. **明确的自然语言恢复**：真实用户说“继续实现目标”时，在自己的输入轮恢复状态，不额外发送恢复消息。不是任意普通输入自动恢复，也不允许扩展控制消息代替用户许可。
+10. **界面静默**：仅使用 Pi 原生 `renderShell: "self"` 与零行调用/结果渲染器隐藏三个 goal 工具；没有修改 Pi 本体，不影响工具执行、结果的模型上下文或其他工作工具。页脚 token 使用紧凑单位，底层计费值不变。
 
 ## 验证边界
 

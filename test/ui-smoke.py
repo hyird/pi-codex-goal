@@ -83,6 +83,13 @@ class Tui:
         (self.work / "terminal.log").write_bytes(self.log)
 
 
+def assert_quiet_goal_tools(t):
+    text = t.log.decode(errors="replace")
+    for name in ("get_goal", "create_goal", "update_goal"):
+        assert name not in text, f"goal management tool leaked into TUI: {name}"
+    assert "WORK_PROBE_VISIBLE" in text, "ordinary work tools must remain visible"
+
+
 def run(mode):
     work = pathlib.Path(tempfile.mkdtemp(prefix="pi-goal-tui-"))
     settings = work / "agent/settings.json"
@@ -104,6 +111,8 @@ def run(mode):
         assert len(controls) == 2 and all(not e["display"] for e in controls), controls
         latest = [e["data"] for e in entries if e.get("type") == "custom" and e.get("customType") == "pi-codex-goal/state-v1"][-1]
         assert latest["goal"] is None and latest["receipt"]["status"] == "complete", latest
+        assert_quiet_goal_tools(t)
+        (work / "terminal-live.log").write_bytes(t.log)
     finally:
         t.close()
     # Reopen: commands were typed by the human, but not persisted as messages.
@@ -113,10 +122,12 @@ def run(mode):
         value = reopened.up()
         assert value == "HUMAN_ONLY_MESSAGE", value
         assert not any(r["kind"] == "request" for r in reopened.rows())
+        assert_quiet_goal_tools(reopened)
     finally:
         reopened.close()
     print(json.dumps({"mode": mode, "result": "PASS", "live_up_history": values,
-        "reopened_up": value, "generated_user_messages": 0, "evidence_dir": str(work)}, ensure_ascii=False))
+        "reopened_up": value, "generated_user_messages": 0, "goal_tools_visible": False,
+        "ordinary_work_visible": True, "evidence_dir": str(work)}, ensure_ascii=False))
 
 for mode in ["regular", "fullscreen"]:
     run(mode)
