@@ -25,17 +25,21 @@
 
 重新打开保存会话后的 ↑：`HUMAN_ONLY_MESSAGE`。插件生成的 user message 数量为 0；内部 control 条目为 2，均 `display: false`、不含目标正文。最新插件状态 `goal: null`，receipt.status 为 complete。
 
-## 实际配置加载
+## 安装来源与实际配置加载
 
-`/home/cloudcli/.pi/agent/settings.json` 中原 `npm:pi-codex-goal` 已替换为 `/home/cloudcli/pi-codex-goal`。
+初次本地验证时，原 `npm:pi-codex-goal` 替换为本地目录；该阶段备份为 `/home/cloudcli/.pi/agent/backups/settings.before-local-codex-goal.json`。
 
-备份：`/home/cloudcli/.pi/agent/backups/settings.before-local-codex-goal.json`。
+随后创建并推送公有仓库：<https://github.com/hyird/pi-codex-goal>，默认分支 `main`。当前 `/home/cloudcli/.pi/agent/settings.json` 的 goal 来源已改为 `git:github.com/hyird/pi-codex-goal`，不再指向本地工作目录。
+
+来源切换备份：`/home/cloudcli/.pi/agent/backups/settings.before-github-codex-goal.json`。使用 Bun 1.4.2 完成 Pi 的 Git 包安装。
 
 使用真实全局 agentDir 和全部已配置扩展进行 `DefaultResourceLoader.reload()`：
 
 - errors：`[]`
-- 唯一 `/goal` 来源：`/home/cloudcli/pi-codex-goal/src/index.ts`
+- 唯一 `/goal` 来源：`/home/cloudcli/.pi/agent/git/github.com/hyird/pi-codex-goal/src/index.ts`
 - 注册工具：get_goal / create_goal / update_goal
+
+GitHub Actions 首次运行已通过：<https://github.com/hyird/pi-codex-goal/actions/runs/37170654665>。覆盖冻结锁文件安装、TypeScript、26 个离线测试，以及 regular / fullscreen 的真实终端历史测试。
 
 配置在重启或 `/reload` 后生效；没有向当前正在运行的旧扩展强制注入重载。没有修改 Pi 本体、现有系统 Node 或认证配置。
 
