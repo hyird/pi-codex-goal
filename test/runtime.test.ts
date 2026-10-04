@@ -41,6 +41,8 @@ async function harness(steps: Step[], work: (h: {
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: [extension, pi => {
       pi.registerTool({ name: "fail_execution", label: "Test failure", description: "Test fixture",
         parameters: Type.Object({}), async execute() { throw Error("Execution unavailable"); } });
+      pi.registerTool({ name: "work_execution", label: "Test work", description: "Test fixture",
+        parameters: Type.Object({}), async execute() { return { content: [{ type: "text", text: "Work performed" }], details: undefined }; } });
     }] });
   await loader.reload();
   const sessionManager = SessionManager.inMemory(dir);
@@ -150,6 +152,53 @@ test("native SDK: three empty automatic runs stop as blocked", async () => {
   });
 });
 
+test("native SDK: bookkeeping-only empty automatic runs cannot spin indefinitely", async () => {
+  await harness([{ tool: "get_goal" }, { empty: true }, { tool: "get_goal" }, { empty: true }, { tool: "get_goal" }, { empty: true }], async h => {
+    await h.run(`/goal ${objective}`);
+    expect(h.requests.length).toBe(6);
+    expect(h.state().goal?.status).toBe("blocked");
+    expect(h.state().goal?.reason).toContain("连续三次自动执行无输出");
+    expect(h.state().goal?.objective).toBe(objective);
+    expect(h.state().goal?.tokensUsed).toBe(66);
+    expect(h.notices.filter(n => n.includes("避免空转")).length).toBe(1);
+  });
+});
+
+test("native SDK: real work without a final reply still counts as progress", async () => {
+  await harness([{ tool: "work_execution" }, { empty: true }, { tool: "work_execution" }, { empty: true }, { tool: "work_execution" }, { empty: true },
+    { tool: "update_goal", args: { status: "complete" } }, { text: "Verified" }], async h => {
+    await h.run(`/goal ${objective}`);
+    expect(h.requests.length).toBe(8);
+    expect(h.state().goal).toBeNull();
+    expect(h.state().receipt?.status).toBe("complete");
+    expect(h.notices.some(n => n.includes("避免空转"))).toBe(false);
+  });
+});
+
+test("native SDK: nonempty task replies after bookkeeping still count as progress", async () => {
+  await harness([{ tool: "get_goal" }, { text: "First deliverable" }, { tool: "get_goal" }, { text: "Second deliverable" }, { tool: "get_goal" }, { text: "Third deliverable" },
+    { tool: "update_goal", args: { status: "complete" } }, { text: "Verified" }], async h => {
+    await h.run(`/goal ${objective}`);
+    expect(h.requests.length).toBe(8);
+    expect(h.state().goal).toBeNull();
+    expect(h.state().receipt?.status).toBe("complete");
+    expect(h.notices.some(n => n.includes("避免空转"))).toBe(false);
+  });
+});
+
+test("native SDK: real work resets bookkeeping-only empty run counts", async () => {
+  await harness([{ tool: "get_goal" }, { empty: true }, { tool: "get_goal" }, { empty: true },
+    { tool: "work_execution" }, { empty: true },
+    { tool: "get_goal" }, { empty: true }, { tool: "get_goal" }, { empty: true },
+    { tool: "update_goal", args: { status: "complete" } }, { text: "Verified" }], async h => {
+    await h.run(`/goal ${objective}`);
+    expect(h.requests.length).toBe(12);
+    expect(h.state().goal).toBeNull();
+    expect(h.state().receipt?.tokensUsed).toBe(121);
+    expect(h.notices.some(n => n.includes("避免空转"))).toBe(false);
+  });
+});
+
 test("native SDK: reload of an active saved goal pauses rather than silently working", async () => {
   const { GoalStore } = await import("../src/state.ts");
   const store = new GoalStore(); store.create(objective);
@@ -211,6 +260,7 @@ test("native SDK: three execution-failure runs are blocked", async () => {
     expect(h.requests.length).toBe(6);
     expect(h.state().goal?.status).toBe("blocked");
     expect(h.state().goal?.reason).toContain("连续三次自动执行失败");
+    expect(h.notices.filter(n => n.includes("避免空转")).length).toBe(1);
   });
 });
 

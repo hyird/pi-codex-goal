@@ -1,5 +1,15 @@
 # 验证记录
 
+## 0.2.1：仅管理调用不再掩盖无输出空转
+
+限定检查发现可复现的 Pi 适配问题：连续三轮仅 `get_goal` 与空回复，旧版继续发出第七个 provider 请求，由测试 provider 的安全兜底错误终止，而不是命中三轮无输出保护。
+
+修复后，同一回归测试在六个请求后停止并保留目标，只通知一次原因；计费仍为精确的 66 tokens。另验证实际工作工具、非空任务回复不被误停，正常工作重置之前的无输出计数。没有把某项功能无法实现当作整目标阻塞理由。
+
+`rtk bun run check`：TypeScript 通过，**79 个测试、0 失败**。`rtk python3 test/ui-smoke.py`：regular / fullscreen 以及会话重开均通过；管理工具仍隐藏，普通工作仍可见，插件生成 user message 为 0。
+
+本次终端证据：regular `/tmp/pi-goal-tui-z2i5gk8x`，fullscreen `/tmp/pi-goal-tui-ph0tw9jy`。真实全局 Pi 1.0.2 SDK 的补充回归也通过：仅管理调用在六个请求后停止，非空任务回复在八个请求后完成、不误停；脚本为 `/tmp/verify-pi-goal-empty-guard.ts`。没有修改 Pi 本体，继续仅使用 Codex 原始文件作为 goal 参考。
+
 ## 0.2.0：紧凑用量、尽力执行、静默管理工具
 
 本地 SDK 依赖为 Pi 1.0.0；真实终端宿主为 Pi 1.0.2；运行与依赖管理为 Bun 1.4.2。没有修改 Pi 本体，也没有调用真实模型或付费服务。
@@ -25,8 +35,6 @@
 ## 初始 0.1.0：类型与行为
 
 初始宿主为 Pi 1.0.0；以下记录保留为初始发布证据。
-
-
 
 `rtk bun run check`：TypeScript 检查通过，26 个测试通过，0 失败。
 

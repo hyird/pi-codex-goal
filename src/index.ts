@@ -233,7 +233,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
     const m = event.message;
     if (m.role !== "assistant" || accounted.has(m)) return;
     accounted.add(m);
-    activity ||= m.content.some(p => p.type === "toolCall" || (p.type === "text" && Boolean(p.text.trim())));
+    // Mandatory goal bookkeeping is not substantive progress by itself.
+    activity ||= m.content.some(p => (p.type === "toolCall" && !TOOL_NAMES.has(p.name)) || (p.type === "text" && Boolean(p.text.trim())));
     if (m.stopReason === "error") lastError = m.errorMessage ?? "Provider error";
     flushTime();
     if (responseGoalId) {
@@ -251,8 +252,9 @@ export default function goalExtension(pi: ExtensionAPI): void {
     if (!TOOL_NAMES.has(event.toolName)) {
       executionFailed ||= event.isError;
       executionSucceeded ||= !event.isError;
+      activity = true;
     }
-    activity = true; flushTime();
+    flushTime();
     // Only top-level results: their usage already aggregates nested child calls.
     if (!event.parentToolCallId && responseGoalId && event.result?.usage) {
       store.account(responseGoalId, goalTokens(event.result.usage), 0);
@@ -286,8 +288,11 @@ export default function goalExtension(pi: ExtensionAPI): void {
       emptyRuns = automatic && !activity ? emptyRuns + 1 : 0;
       failureRuns = automatic && executionFailed && !executionSucceeded ? failureRuns + 1 : 0;
       if (emptyRuns >= 3 || failureRuns >= 3) {
-        store.transition(g.id, "blocked", emptyRuns >= 3 ? "连续三次自动执行无输出" : "连续三次自动执行失败");
-        persist(ctx); return;
+        const reason = emptyRuns >= 3 ? "连续三次自动执行无输出" : "连续三次自动执行失败";
+        store.transition(g.id, "blocked", reason);
+        persist(ctx);
+        ctx.ui.notify(`Goal 已停止自动续跑：${reason}，避免空转。目标已保留。`, "warning");
+        return;
       }
     }
     persist(ctx);
