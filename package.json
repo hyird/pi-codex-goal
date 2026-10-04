@@ -1,0 +1,16 @@
+{
+  "name": "pi-codex-goal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Independent Pi goal runtime based on OpenAI Codex goal semantics, without generated user messages.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/hyird/pi-codex-goal.git" },
+  "homepage": "https://github.com/hyird/pi-codex-goal#readme",
+  "bugs": { "url": "https://github.com/hyird/pi-codex-goal/issues" },
+  "pi": { "extensions": ["./src/index.ts"] },
+  "scripts": { "test": "bun test", "typecheck": "tsc --noEmit", "check": "bun run typecheck && bun test" },
+  "overrides": { "@earendil-works/pi-ai": "1.0.0", "@earendil-works/pi-agent-core": "1.0.0" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "typebox": "*" },
+  "devDependencies": { "@earendil-works/pi-coding-agent": "1.0.0", "@earendil-works/pi-ai": "1.0.0", "@types/bun": "latest", "typebox": "1.3.27", "typescript": "7.0.2" }
+}

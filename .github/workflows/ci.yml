@@ -1,0 +1,29 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: Install dependencies without lifecycle scripts
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Typecheck and offline SDK tests
+        run: bun run check
+      - name: Create Bun-based Pi launcher
+        run: |
+          printf '#!/usr/bin/env bash\nexec bun "%s/node_modules/@earendil-works/pi-coding-agent/dist/cli.js" "$@"\n' "$PWD" > "$RUNNER_TEMP/pi-bun"
+          chmod +x "$RUNNER_TEMP/pi-bun"
+          echo "PI_BINARY=$RUNNER_TEMP/pi-bun" >> "$GITHUB_ENV"
+      - name: Offline regular and fullscreen terminal history tests
+        run: python3 test/ui-smoke.py
