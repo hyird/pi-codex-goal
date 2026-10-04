@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext, CustomMessageEntryDraft } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { formatTokenCount } from "./format.ts";
 import { isExplicitGoalResume } from "./intent.ts";
 import { quietGoalRenderers } from "./render.ts";
+import { formatGoalStatus, GOAL_STATUS_KEY } from "./status.ts";
 import { CONTROL_TYPE, STATE_TYPE, GoalStore, emptyState, type Goal } from "./state.ts";
 
 const TOOL_NAMES = new Set(["get_goal", "create_goal", "update_goal"]);
@@ -44,11 +44,26 @@ export default function goalExtension(pi: ExtensionAPI): void {
   let failureRuns = 0;
   let lastError = "";
   let accounted = new WeakSet<object>();
+  let statusTimer: ReturnType<typeof setInterval> | undefined;
+  let statusContext: ExtensionContext | undefined;
 
   function status(ctx: ExtensionContext): void {
-    const { goal, receipt } = store.snapshot();
-    const label = goal ? `Goal · ${goal.status} · ${formatTokenCount(goal.tokensUsed)} tokens` : receipt ? `Goal · complete · ${formatTokenCount(receipt.tokensUsed)} tokens` : undefined;
-    ctx.ui.setStatus("pi-codex-goal", label);
+    statusContext = ctx;
+    const state = store.snapshot();
+    const ticking = state.goal?.status === "active" && state.goal.id === timeGoalId && activeAt !== null;
+    const interactive = ctx.hasUI && ctx.mode === "tui";
+    const theme = interactive ? ctx.ui.theme : undefined;
+    ctx.ui.setStatus(GOAL_STATUS_KEY, formatGoalStatus(state, theme, ticking ? Date.now() - activeAt! : 0));
+    if (ticking && interactive) {
+      if (!statusTimer) {
+        statusTimer = setInterval(() => { if (statusContext) status(statusContext); }, 1000);
+        statusTimer.unref?.();
+      }
+    } else stopStatusTimer();
+  }
+  function stopStatusTimer(): void {
+    if (statusTimer) clearInterval(statusTimer);
+    statusTimer = undefined;
   }
   function persist(ctx: ExtensionContext): void {
     const state = store.snapshot();
@@ -67,11 +82,13 @@ export default function goalExtension(pi: ExtensionAPI): void {
     automatic = false; activity = false; executionFailed = false; executionSucceeded = false; lastError = "";
   }
   function stopRuntime(): void {
+    stopStatusTimer(); statusContext = undefined;
     running = false; admissionPending = false; responseGoalId = null;
     timeGoalId = null; activeAt = null; emptyRuns = 0; failureRuns = 0; resetRun();
   }
   function restore(ctx: ExtensionContext): void {
     stopRuntime(); accounted = new WeakSet();
+    ctx.ui.setStatus("pi-codex-goal", undefined);
     const branch = ctx.sessionManager.getBranch();
     let snapshot: unknown = emptyState();
     for (const entry of branch) if (entry.type === "custom" && entry.customType === STATE_TYPE) snapshot = entry.data;
@@ -212,17 +229,20 @@ export default function goalExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", (_event, ctx) => restore(ctx));
   pi.on("session_tree", (_event, ctx) => restore(ctx));
-  pi.on("session_shutdown", (_event, ctx) => { flushTime(); persist(ctx); stopRuntime(); });
+  pi.on("session_shutdown", (_event, ctx) => {
+    flushTime(); persist(ctx); stopRuntime(); ctx.ui.setStatus(GOAL_STATUS_KEY, undefined);
+  });
   pi.on("agent_start", () => {
     running = true; resetRun();
     // Bind the whole run, including tool follow-ups, to one goal identity.
     responseGoalId = store.snapshot().goal?.id ?? null;
   });
-  pi.on("turn_start", () => {
+  pi.on("turn_start", (_event, ctx) => {
     flushTime();
     const g = store.snapshot().goal;
     timeGoalId = g?.status === "active" && g.id === responseGoalId ? g.id : null;
     activeAt = timeGoalId ? Date.now() : null;
+    status(ctx);
   });
   pi.on("message_start", (event) => {
     const id = controlId(event.message);
@@ -298,7 +318,10 @@ export default function goalExtension(pi: ExtensionAPI): void {
     persist(ctx);
     return { entries: [control(g)], continue: true };
   });
-  pi.on("agent_settled", () => { running = false; admissionPending = false; timeGoalId = null; activeAt = null; });
+  pi.on("agent_settled", (_event, ctx) => {
+    flushTime(); running = false; admissionPending = false; timeGoalId = null; activeAt = null;
+    status(ctx);
+  });
 
   pi.on("context", (event, ctx) => {
     const g = store.snapshot().goal;

@@ -3,12 +3,14 @@ import { Type } from "typebox";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { createAssistantMessageEventStream, InMemoryCredentialStore, type AssistantMessage, type StreamFunction, type ToolCall } from "@earendil-works/pi-ai";
-import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type InputSource } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, initTheme, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type InputSource } from "@earendil-works/pi-coding-agent";
 import extension from "../src/index.ts";
 import { CONTROL_TYPE, STATE_TYPE, emptyState, parseState, type State } from "../src/state.ts";
 
 const objective = "OBJECTIVE_STATE_ONLY_中文_790f";
+initTheme("dark", false);
 type Step = { text?: string; tool?: string; args?: ToolCall["arguments"]; error?: string; empty?: boolean; aborted?: boolean; before?: (session: AgentSession) => Promise<void> };
 function response(model: Parameters<StreamFunction>[0], step: Step, call: number): ReturnType<StreamFunction> {
   const stream = createAssistantMessageEventStream();
@@ -65,7 +67,7 @@ async function harness(steps: Step[], work: (h: {
     await session.bindExtensions({});
     session.extensionRunner!.setUIContext({ ...session.extensionRunner!.createContext().ui,
       notify(message) { notices.push(message); }, confirm: async () => true,
-      setStatus(_key, value) { if (value !== undefined) statuses.push(value); },
+      setStatus(_key, value) { if (value !== undefined) statuses.push(stripVTControlCharacters(value)); },
     }, "tui");
     await work({ session, requests, notices, statuses,
       state() {
@@ -84,6 +86,7 @@ test("native SDK: initial objective stays in state; automatic continuation has n
     { tool: "get_goal" }, { tool: "update_goal", args: { status: "complete" } }, { text: "Verified" },
   ], async h => {
     await h.run(`/goal ${objective}`);
+    expect(h.notices).toEqual([]);
     expect(h.requests.length).toBe(5);
     expect(h.state().goal).toBeNull();
     expect(h.state().receipt?.tokensUsed).toBe(44); // calling response, but not completion epilogue
@@ -326,11 +329,33 @@ test("native SDK: compact footer preserves exact state and tool numbers", async 
   store.account(goal.id, 664812, 0);
   await harness([{ tool: "get_goal" }, { tool: "update_goal", args: { status: "complete" } }, { text: "Done" }], async h => {
     await h.run("/goal resume");
-    expect(h.statuses.some(s => s === "Goal · active · 664.8K tokens")).toBe(true);
-    expect(h.statuses.at(-1)).toBe("Goal · complete · 664.8K tokens");
+    expect(h.statuses.some(s => s.startsWith("Goal ● Active · 664.8K tokens · "))).toBe(true);
+    expect(h.statuses.at(-1)).toMatch(/^Goal ✓ Complete · 664\.8K tokens · \d+s$/);
     expect(h.state().receipt?.tokensUsed).toBe(664834);
     expect(JSON.stringify(h.requests[1]!.messages)).toContain('"tokensUsed":664823');
   }, store.snapshot());
+});
+
+test("native SDK: footer clock ticks without writing state and stops after completion", async () => {
+  let statuses: string[] = [];
+  await harness([
+    { tool: "get_goal", before: async session => {
+      const entries = session.sessionManager.getEntryCount();
+      const updates = statuses.length;
+      await Bun.sleep(1100);
+      expect(statuses.length).toBeGreaterThan(updates);
+      expect(statuses.at(-1)).toMatch(/^Goal ● Active · 0 tokens · 1s$/);
+      expect(session.sessionManager.getEntryCount()).toBe(entries);
+    } },
+    { tool: "update_goal", args: { status: "complete" } }, { text: "Done" },
+  ], async h => {
+    statuses = h.statuses;
+    await h.run(`/goal ${objective}`);
+    expect(h.state().receipt?.activeMs).toBeGreaterThanOrEqual(1000);
+    const updates = statuses.length;
+    await Bun.sleep(1100);
+    expect(statuses).toHaveLength(updates);
+  });
 });
 
 test("native SDK: one impossible requirement does not block feasible work", async () => {
