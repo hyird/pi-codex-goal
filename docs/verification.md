@@ -14,7 +14,13 @@
 
 终端证据目录：regular `/tmp/pi-goal-tui-604nzv97`，fullscreen `/tmp/pi-goal-tui-shxxjt09`。包含 `audit.jsonl`、真实 session JSONL、`terminal-live.log`、重新打开后的 `terminal.log`。
 
-这些测试验证插件协议与显示行为，不证明模型每次都能正确判断可行性；布尔声明不代替真实证据。远程发布与安装验证会在完成后补记。
+这些测试验证插件协议与显示行为，不证明模型每次都能正确判断可行性；布尔声明不代替真实证据。
+
+实现提交 `93b4348c07f35d4a8edea3291276fd1f883d571f` 已推送到公有 GitHub 仓库。该提交的 GitHub Actions 已通过：<https://github.com/hyird/pi-codex-goal/actions/runs/37173252749>。
+
+在线执行 `pi update git:github.com/hyird/pi-codex-goal`，确认安装 clone 与实现提交一致。真实全局配置 `DefaultResourceLoader.reload()`：errors 为 `[]`，唯一 `/goal` 来源仍为 GitHub clone；三个管理工具均注册原生静默渲染器，已安装的 K/M/B/T 格式化、明确恢复识别和阻塞门控均验证通过。验证脚本为 `/tmp/verify-pi-codex-goal-0.2.ts`。
+
+当前运行会话仍需用户 `/reload` 或重启才加载新代码；之后明确说“继续实现目标”即可恢复已保留的目标。没有为了恢复旧状态而替换目标、改写历史，或向当前会话伪造用户输入。
 
 ## 初始 0.1.0：类型与行为
 
