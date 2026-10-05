@@ -61,6 +61,51 @@ describe("persistent goal state", () => {
     store.account(g.id, 100, 100);
     expect(store.snapshot().goal?.tokensUsed).toBe(10);
   });
+  test("continuous goals cannot be completed by finishing one cycle", () => {
+    const { store } = fixture();
+    const goal = store.create("不断打磨ruvia-http 优化性能 修复bug");
+    store.account(goal.id, 100, 30);
+    const before = store.snapshot();
+    expect(goal.continuous).toBe(true);
+    expect(() => store.complete(goal.id)).toThrow("持续目标");
+    expect(store.snapshot()).toEqual(before);
+    expect(store.snapshot().goal?.status).toBe("active");
+    expect(store.snapshot().receipt).toBeNull();
+  });
+  test("ongoing wording cannot be cleared by budget or completion", () => {
+    const { store } = fixture();
+    const goal = store.create("Keep maintaining this project", 10);
+    expect(goal.continuous).toBe(true);
+    store.account(goal.id, 10, 20);
+    expect(store.snapshot().goal?.status).toBe("budgetLimited");
+    expect(() => store.complete(goal.id)).toThrow("持续目标");
+    expect(store.snapshot().goal?.objective).toBe("Keep maintaining this project");
+    expect(store.snapshot().receipt).toBeNull();
+    store.clear(); // Explicit user clear remains available.
+    expect(store.snapshot()).toEqual(emptyState());
+  });
+  test("legacy snapshots recognize ongoing intent without losing accounting", () => {
+    for (const objective of ["不断打磨ruvia-http 优化性能 修复bug", "实现功能并验证"]) {
+      const { store } = fixture();
+      const goal = store.create(objective);
+      store.account(goal.id, 100, 30);
+      const snapshot = store.snapshot();
+      const { continuous: _continuous, ...legacyGoal } = snapshot.goal!;
+      const restored = new GoalStore();
+      restored.restore({ ...snapshot, goal: legacyGoal });
+      expect(restored.snapshot().goal).toEqual({ ...snapshot.goal!, continuous: objective.startsWith("不断") });
+      expect(legacyGoal).not.toHaveProperty("continuous");
+      if (objective.startsWith("不断")) expect(() => restored.complete(goal.id)).toThrow("持续目标");
+      else expect(restored.complete(goal.id).tokensUsed).toBe(100);
+    }
+  });
+  test("invalid continuous flags are rejected rather than coerced", () => {
+    const { store } = fixture(); store.create("finite objective");
+    const snapshot = store.snapshot();
+    for (const continuous of [null, "false", 1, {}]) {
+      expect(() => parseState({ ...snapshot, goal: { ...snapshot.goal!, continuous } })).toThrow("目标状态损坏");
+    }
+  });
   test("completion clears objective but preserves idempotent usage receipt", () => {
     const { store } = fixture();
     const g = store.create("sensitive objective");

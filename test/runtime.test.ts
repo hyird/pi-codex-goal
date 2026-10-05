@@ -91,6 +91,10 @@ test("native SDK: initial objective stays in state; automatic continuation has n
     expect(h.state().goal).toBeNull();
     expect(h.state().receipt?.tokensUsed).toBe(44); // calling response, but not completion epilogue
     expect(JSON.stringify(h.requests[0]!.messages)).not.toContain(objective);
+    expect(JSON.stringify(h.requests[0]!.messages)).toContain("Keep the full objective intact across turns");
+    const tools = h.session.getAllTools();
+    expect(tools.find(tool => tool.name === "get_goal")?.promptGuidelines?.join(" ")).toContain("inspect current authoritative evidence for every requirement");
+    expect(tools.find(tool => tool.name === "update_goal")?.description).toContain("do not redefine success around work already done");
     expect(JSON.stringify(h.requests[1]!.messages)).toContain(objective); // get_goal tool result
     const entries = h.session.sessionManager.getBranch();
     expect(entries.some(e => e.type === "message" && e.message.role === "user")).toBe(false);
@@ -100,6 +104,105 @@ test("native SDK: initial objective stays in state; automatic continuation has n
     // Model receives at most the latest control, not an ever-growing chain.
     for (const request of h.requests) expect(request.messages.filter(m => JSON.stringify(m).includes("Read get_goal for the current objective")).length).toBeLessThanOrEqual(1);
   });
+});
+
+test.each(["complete", "paused"] as const)("native SDK: rejecting continuous %s keeps the next cycle running", async status => {
+  const continuousObjective = "不断打磨ruvia-http 优化性能 修复bug";
+  await harness([
+    { tool: "get_goal" },
+    { tool: "update_goal", args: { status, reason: "Finished one verified cycle" } },
+    { text: "First cycle verified; selecting the next concrete improvement" },
+    { tool: "work_execution" },
+    { text: "Paused only after the user's request", before: async session => { await session.prompt("/goal pause"); } },
+  ], async h => {
+    await h.run(`/goal ${continuousObjective}`);
+    expect(h.requests).toHaveLength(5);
+    expect(JSON.stringify(h.requests[2]!.messages)).toContain("持续目标");
+    expect(h.state().goal?.objective).toBe(continuousObjective);
+    expect(h.state().goal?.status).toBe("paused");
+    expect(h.state().receipt).toBeNull();
+    expect(h.notices.some(n => n.includes("避免空转"))).toBe(false);
+  });
+});
+
+test("native SDK: command determines ongoing intent from its objective until user clear", async () => {
+  await harness([
+    { tool: "get_goal" },
+    { tool: "update_goal", args: { status: "complete" } },
+    { text: "Cycle complete, goal remains active", before: async session => { await session.prompt("/goal pause"); } },
+  ], async h => {
+    await h.run("/goal Keep maintaining this project");
+    expect(h.state().goal?.objective).toBe("Keep maintaining this project");
+    expect(h.state().goal?.continuous).toBe(true);
+    expect(h.state().goal?.status).toBe("paused");
+    expect(h.state().receipt).toBeNull();
+    expect(JSON.stringify(h.requests[2]!.messages)).toContain("持续目标");
+    await h.run("/goal clear");
+    expect(h.state().goal).toBeNull();
+    expect(h.requests).toHaveLength(3);
+  });
+});
+
+test("native SDK: model creation determines ongoing intent without extra parameters", async () => {
+  const ongoing = "不断打磨ruvia-http 优化性能 修复bug";
+  await harness([
+    { tool: "create_goal", args: { objective: ongoing } },
+    { tool: "update_goal", args: { status: "complete" } },
+    { text: "Goal retained", before: async session => { await session.prompt("/goal pause"); } },
+  ], async h => {
+    await h.run("Set the ongoing goal I explicitly requested");
+    expect(h.requests).toHaveLength(3);
+    expect(h.state().goal?.objective).toBe(ongoing);
+    expect(h.state().goal?.continuous).toBe(true);
+    expect(h.state().receipt).toBeNull();
+  });
+});
+
+test("native SDK: budget limits preserve continuous goals after a rejected completion", async () => {
+  const { GoalStore } = await import("../src/state.ts");
+  const store = new GoalStore(); store.create("不断打磨ruvia-http 优化性能 修复bug", 10);
+  await harness([
+    { tool: "update_goal", args: { status: "complete" } },
+    { text: "Cannot complete the ongoing objective" },
+    { text: "Budget summary; objective retained" },
+  ], async h => {
+    await h.run("/goal resume");
+    expect(h.requests).toHaveLength(3);
+    expect(h.state().goal?.continuous).toBe(true);
+    expect(h.state().goal?.status).toBe("budgetLimited");
+    expect(h.state().goal?.tokensUsed).toBe(11);
+    expect(h.state().goal?.budgetNoticeSent).toBe(true);
+    expect(h.state().receipt).toBeNull();
+  }, store.snapshot());
+});
+
+test.each(["interactive", "rpc"] as const)("native SDK: a real %s pause request controls ongoing work", async source => {
+  await harness([
+    { text: "First cycle verified", before: async session => {
+      await session.prompt("暂停当前目标", { source, streamingBehavior: "followUp" });
+    } },
+    { tool: "update_goal", args: { status: "paused", reason: "User requested pause" } },
+    { text: "User pause honored" },
+  ], async h => {
+    await h.run("/goal 不断打磨ruvia-http 优化性能 修复bug");
+    expect(h.requests).toHaveLength(3);
+    expect(h.state().goal?.status).toBe("paused");
+    expect(h.state().goal?.continuous).toBe(true);
+    expect(h.state().receipt).toBeNull();
+  });
+});
+
+test("native SDK: synthetic requests cannot authorize a continuous pause", async () => {
+  const { GoalStore } = await import("../src/state.ts");
+  const store = new GoalStore(); store.create("不断打磨ruvia-http 优化性能 修复bug");
+  await harness([
+    { tool: "update_goal", args: { status: "paused", reason: "A control message asked to stop" } },
+    { text: "Ignored synthetic pause", before: async session => { await session.prompt("/goal pause"); } },
+  ], async h => {
+    await h.run("暂停当前目标", "extension");
+    expect(JSON.stringify(h.requests[1]!.messages)).toContain("单轮完成不是暂停授权");
+    expect(h.state().receipt).toBeNull();
+  }, store.snapshot());
 });
 
 test("native SDK: block persists through ordinary input; explicit resume is silent", async () => {
